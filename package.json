@@ -1,0 +1,73 @@
+{
+  "name": "@metricinsights/pp-error-handler",
+  "version": "0.1.0",
+  "description": "Error handler for Metrics Insights Portal Pages (Custom Apps)",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./styles.css": "./dist/index.css"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "esbuild-sass-plugin": "^3.6.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sass": "^1.82.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  },
+  "keywords": [
+    "react",
+    "error-handler",
+    "error-boundary",
+    "error-overlay",
+    "error-tracking",
+    "network-interceptor",
+    "fetch-interceptor",
+    "xhr-interceptor",
+    "axios-interceptor",
+    "error-classification",
+    "developer-tools"
+  ],
+  "author": "Mykhailo Ozdemir",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mi-examples/pp-error-handler.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mi-examples/pp-error-handler/issues"
+  },
+  "homepage": "https://github.com/mi-examples/pp-error-handler#readme",
+  "license": "MIT"
+}
