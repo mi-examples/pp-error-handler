@@ -45,7 +45,7 @@
     "react-dom": "^18.3.1",
     "sass": "^1.82.0",
     "tsup": "^8.3.5",
-    "typescript": "^5.7.2"
+    "typescript": "^6.0.2"
   },
   "keywords": [
     "react",
