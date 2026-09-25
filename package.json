@@ -30,8 +30,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
     "react": ">=18.0.0",
@@ -69,5 +68,8 @@
     "url": "https://github.com/mi-examples/pp-error-handler/issues"
   },
   "homepage": "https://github.com/mi-examples/pp-error-handler#readme",
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
 }
