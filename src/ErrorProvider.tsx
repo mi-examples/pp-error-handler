@@ -17,6 +17,24 @@ import { ErrorOverlay } from './ErrorOverlay';
 import { ErrorContext } from './ErrorContext';
 
 const NETWORK_CORRELATION_MS = 200;
+const NETWORK_DEDUPE_MS = 200;
+
+interface PendingNetworkError {
+  captured: CapturedError;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
+/** Method + URL (without query and hash) + status: the same failure seen by two interceptors. */
+function networkReportKey(details: NetworkErrorDetails): string {
+  let url = details.url;
+
+  try {
+    const parsed = new URL(details.url, window.location.href);
+    url = parsed.origin + parsed.pathname;
+  } catch {}
+
+  return `${details.method.toUpperCase()} ${url} ${details.status ?? 'no-response'}`;
+}
 
 // Layout effects run before the children's mount effects, so requests made there are intercepted.
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
@@ -82,12 +100,30 @@ export function ErrorProvider({
     }
   }, []);
 
-  const pendingNetworkErrorsRef = useRef<
-    Map<unknown, { captured: CapturedError; timeoutId: ReturnType<typeof setTimeout> }>
-  >(new Map());
+  const pendingNetworkErrorsRef = useRef<Map<unknown, PendingNetworkError>>(new Map());
+  const recentNetworkReportsRef = useRef<Array<{ key: string; at: number; entry: PendingNetworkError }>>([]);
 
   const handleNetworkErrorStable = useCallback(
     (networkDetails: NetworkErrorDetails, originalError?: Error) => {
+      // The browser axios adapter uses XHR, so one failed request reaches both the XHR and the
+      // axios interceptor. Keep the first report and drop the copy, but map the copy's error to
+      // the first report so its unhandled rejection still correlates with it.
+      const now = Date.now();
+      const key = networkReportKey(networkDetails);
+      const recent = recentNetworkReportsRef.current.filter((r) => now - r.at <= NETWORK_DEDUPE_MS);
+      recentNetworkReportsRef.current = recent;
+      const duplicate = recent.find((r) => r.key === key);
+
+      if (duplicate) {
+        const stillPending = [...pendingNetworkErrorsRef.current.values()].includes(duplicate.entry);
+
+        if (originalError && stillPending) {
+          pendingNetworkErrorsRef.current.set(originalError, duplicate.entry);
+        }
+
+        return;
+      }
+
       const error = originalError ?? new Error(`HTTP ${networkDetails.status}: ${networkDetails.url}`);
       const category = networkDetails.status ? ('API' as const) : ('NETWORK' as const);
       const capturedError = createCapturedError(error, { networkDetails, category });
@@ -99,7 +135,8 @@ export function ErrorProvider({
         addErrorStable(capturedError, false);
       }, NETWORK_CORRELATION_MS);
 
-      const entry = { captured: capturedError, timeoutId };
+      const entry: PendingNetworkError = { captured: capturedError, timeoutId };
+      recent.push({ key, at: now, entry });
 
       if (originalError) {
         pendingNetworkErrorsRef.current.set(originalError, entry);
