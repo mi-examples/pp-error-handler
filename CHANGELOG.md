@@ -4,7 +4,7 @@
 
 ### ⚠ Breaking changes
 
-- The package now declares `engines.node` `>=22`, so installs on Node.js 18 or 20 may warn or fail (for example with `engine-strict`); upgrade to Node.js 22 or later.
+- The package now declares `engines.node` `>=22`. It still runs in the browser as before; the requirement applies to the Node.js version that installs, builds or server-renders your app. Package managers with `engine-strict` refuse to install it on older Node.js, others print a warning. Use Node.js 22 or later there.
 
 ### Bug fixes
 
