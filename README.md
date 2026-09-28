@@ -238,7 +238,7 @@ import type {
   ErrorMeta,
   StackFrame,
   NetworkErrorDetails,
-  EnvironmentInfo,
+  EnvironmentInfoType,
   ErrorProviderProps,
   ErrorContextValue,
   UseErrorHandler,
