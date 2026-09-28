@@ -8,6 +8,7 @@ import type {
   ViewMode,
 } from './types';
 import { createCapturedError, getInitialViewMode, getDefaultDismissible } from './utils/capturedError';
+import { classifyError } from './utils/errorClassifier';
 import { installFetchInterceptor } from './interceptors/fetchInterceptor';
 import { installXhrInterceptor } from './interceptors/xhrInterceptor';
 import { installAxiosInstanceInterceptors } from './interceptors/axiosInterceptor';
@@ -206,7 +207,11 @@ export function ErrorProvider({
         return;
       }
 
-      addErrorStable(createCapturedError(error, { category: 'UNHANDLED_PROMISE' }));
+      // Keep a specific category (e.g. CHUNK for a failed dynamic import) when the classifier finds one.
+      const classified = classifyError(error);
+      addErrorStable(
+        createCapturedError(error, { category: classified === 'UNKNOWN' ? 'UNHANDLED_PROMISE' : classified }),
+      );
     },
     [addErrorStable, clearPendingEntry],
   );
