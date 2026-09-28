@@ -240,7 +240,7 @@ export function ErrorProvider({
 
   return (
     <ErrorContext.Provider value={contextValue}>
-      <ErrorBoundary ref={errorBoundaryRef} onError={handleBoundaryError} fallback={showOverlay ? null : children}>
+      <ErrorBoundary ref={errorBoundaryRef} onError={handleBoundaryError} fallback={null}>
         {children}
       </ErrorBoundary>
       {renderOverlay()}
