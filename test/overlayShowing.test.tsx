@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, screen } from '@testing-library/react';
-import { renderProvider } from './helpers';
+import { renderProvider, wait } from './helpers';
 
 describe('errors captured while the overlay is shown', () => {
-  it('are logged and passed to onError, and the first error stays on screen', () => {
+  it('are logged and passed to onError, and the first error stays on screen', async () => {
     const onError = vi.fn();
     const handle = renderProvider({ onError });
 
@@ -12,6 +12,7 @@ describe('errors captured while the overlay is shown', () => {
     act(() => {
       window.dispatchEvent(new ErrorEvent('error', { error: new Error('global failure'), message: 'global failure' }));
     });
+    await act(() => wait(10));
 
     expect(onError.mock.calls.map(([e]) => e.message)).toEqual([
       'first failure',

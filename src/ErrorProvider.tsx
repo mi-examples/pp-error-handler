@@ -19,6 +19,7 @@ import { ErrorContext } from './ErrorContext';
 
 const NETWORK_CORRELATION_MS = 200;
 const NETWORK_DEDUPE_MS = 200;
+const RENDER_REPLAY_WINDOW_MS = 1000;
 
 interface PendingNetworkError {
   captured: CapturedError;
@@ -182,8 +183,14 @@ export function ErrorProvider({
     [addErrorStable],
   );
 
+  // React development builds also raise a render error (and its replays) as global error
+  // events before the boundary catches it; those copies are dropped in handleGlobalError.
+  const boundaryErrorsRef = useRef<Array<{ name: string; message: string; at: number }>>([]);
+  const globalErrorTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+
   const handleBoundaryError = useCallback(
     (error: Error, errorInfo: React.ErrorInfo) => {
+      boundaryErrorsRef.current.push({ name: error.name, message: error.message, at: Date.now() });
       addErrorStable(createCapturedError(error, { componentStack: errorInfo.componentStack || undefined }));
     },
     [addErrorStable],
@@ -218,16 +225,28 @@ export function ErrorProvider({
 
   const handleGlobalError = useCallback(
     (error: Error, event: ErrorEvent) => {
-      const pending = pendingNetworkErrorsRef.current.get(event.error) ?? pendingNetworkErrorsRef.current.get(error);
+      // Deferred so a render error the boundary catches in the same task is reported once, by the boundary.
+      const timerId = setTimeout(() => {
+        globalErrorTimersRef.current.delete(timerId);
 
-      if (pending) {
-        clearPendingEntry(pending);
-        addErrorStable(pending.captured, true);
+        const now = Date.now();
+        boundaryErrorsRef.current = boundaryErrorsRef.current.filter((b) => now - b.at <= RENDER_REPLAY_WINDOW_MS);
+        if (boundaryErrorsRef.current.some((b) => b.name === error.name && b.message === error.message)) {
+          return;
+        }
 
-        return;
-      }
+        const pending = pendingNetworkErrorsRef.current.get(event.error) ?? pendingNetworkErrorsRef.current.get(error);
 
-      addErrorStable(createCapturedError(error));
+        if (pending) {
+          clearPendingEntry(pending);
+          addErrorStable(pending.captured, true);
+
+          return;
+        }
+
+        addErrorStable(createCapturedError(error));
+      }, 0);
+      globalErrorTimersRef.current.add(timerId);
     },
     [addErrorStable, clearPendingEntry],
   );
@@ -269,6 +288,9 @@ export function ErrorProvider({
 
   useEffect(() => {
     return () => {
+      globalErrorTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+      globalErrorTimersRef.current.clear();
+
       for (const { timeoutId } of pendingNetworkErrorsRef.current.values()) {
         clearTimeout(timeoutId);
       }
