@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type {
   CapturedError,
   ErrorContextValue,
@@ -17,6 +17,21 @@ import { ErrorOverlay } from './ErrorOverlay';
 import { ErrorContext } from './ErrorContext';
 
 const NETWORK_CORRELATION_MS = 200;
+
+// Layout effects run before the children's mount effects, so requests made there are intercepted.
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+/** Returns the previous array while the items are the same, so inline arrays don't re-run effects. */
+function useShallowStableArray<T>(items: T[]): T[] {
+  const ref = useRef(items);
+  const prev = ref.current;
+
+  if (prev !== items && (prev.length !== items.length || prev.some((item, i) => item !== items[i]))) {
+    ref.current = items;
+  }
+
+  return ref.current;
+}
 
 export function ErrorProvider({
   children,
@@ -111,22 +126,15 @@ export function ErrorProvider({
     [handleNetworkErrorStable],
   );
 
-  const axiosCleanupRef = useRef<{ restore: () => void } | null>(null);
-  const axiosInstalledForRef = useRef<unknown[] | null>(null);
+  const stableAxiosInstances = useShallowStableArray(axiosInstances);
 
-  if (axiosInstances.length > 0 && axiosInstalledForRef.current !== axiosInstances) {
-    axiosCleanupRef.current?.restore();
-    axiosCleanupRef.current = installAxiosInstanceInterceptors(axiosInstances, {
-      ignoreStatuses,
-      ignoreUrls,
-      onError: handleNetworkErrorStable,
-    });
-    axiosInstalledForRef.current = axiosInstances;
-  } else if (axiosInstances.length === 0 && axiosInstalledForRef.current !== null) {
-    axiosCleanupRef.current?.restore();
-    axiosCleanupRef.current = null;
-    axiosInstalledForRef.current = null;
-  }
+  useIsomorphicLayoutEffect(() => {
+    if (stableAxiosInstances.length === 0) return;
+
+    const axiosCleanup = installAxiosInstanceInterceptors(stableAxiosInstances, networkConfig);
+
+    return () => axiosCleanup.restore();
+  }, [stableAxiosInstances, networkConfig]);
 
   const reportError = useCallback(
     (error: Error | string, metadata?: Record<string, unknown>) => {
@@ -219,10 +227,6 @@ export function ErrorProvider({
 
   useEffect(() => {
     return () => {
-      axiosCleanupRef.current?.restore();
-      axiosCleanupRef.current = null;
-      axiosInstalledForRef.current = [];
-
       for (const { timeoutId } of pendingNetworkErrorsRef.current.values()) {
         clearTimeout(timeoutId);
       }

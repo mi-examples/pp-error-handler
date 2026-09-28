@@ -13,6 +13,7 @@ export interface ProviderHandle {
 export function renderProvider(
   props: Partial<ErrorProviderProps> = {},
   children: React.ReactNode = null,
+  options: { strict?: boolean } = {},
 ): ProviderHandle {
   let current: UseErrorHandler | undefined;
 
@@ -29,7 +30,7 @@ export function renderProvider(
     </ErrorProvider>
   );
 
-  const result = render(tree(props));
+  const result = render(tree(props), { reactStrictMode: options.strict });
 
   return {
     api: () => {
@@ -44,4 +45,45 @@ export function renderProvider(
 
 export function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface FakeInterceptorManager {
+  handlers: Map<number, { fulfilled?: (value: unknown) => unknown; rejected?: (error: unknown) => unknown }>;
+  use: (fulfilled?: (value: unknown) => unknown, rejected?: (error: unknown) => unknown) => number;
+  eject: (id: number) => void;
+}
+
+function fakeInterceptorManager(): FakeInterceptorManager {
+  let nextId = 0;
+  const handlers: FakeInterceptorManager['handlers'] = new Map();
+
+  return {
+    handlers,
+    use: (fulfilled, rejected) => {
+      handlers.set(nextId, { fulfilled, rejected });
+
+      return nextId++;
+    },
+    eject: (id) => {
+      handlers.delete(id);
+    },
+  };
+}
+
+/** The part of an axios instance the interceptor uses. */
+export function fakeAxiosInstance() {
+  return { interceptors: { request: fakeInterceptorManager(), response: fakeInterceptorManager() } };
+}
+
+export type FakeAxiosInstance = ReturnType<typeof fakeAxiosInstance>;
+
+/** Runs an error through every registered response error interceptor, like axios does. */
+export async function rejectThroughAxios(instance: FakeAxiosInstance, error: unknown): Promise<unknown> {
+  let result: Promise<unknown> = Promise.reject(error);
+
+  for (const { rejected } of instance.interceptors.response.handlers.values()) {
+    result = result.catch((e) => (rejected ? rejected(e) : Promise.reject(e)));
+  }
+
+  return result.catch((e) => e);
 }
