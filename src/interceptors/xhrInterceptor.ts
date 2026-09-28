@@ -1,9 +1,7 @@
 import type { NetworkErrorDetails, NetworkInterceptorConfig, InterceptorCleanup } from '../types';
 import { SENSITIVE_HEADERS, truncateBody, shouldIgnoreUrl, shouldIgnoreStatus } from './shared';
 
-let originalOpen: typeof XMLHttpRequest.prototype.open | null = null;
-let originalSend: typeof XMLHttpRequest.prototype.send | null = null;
-let isPatched = false;
+let activePatch: { unpatch: () => void } | null = null;
 let patchCount = 0;
 
 interface XHRMetadata {
@@ -15,29 +13,51 @@ interface XHRMetadata {
 
 const xhrMetadataMap = new WeakMap<XMLHttpRequest, XHRMetadata>();
 
+function releasePatch(): void {
+  patchCount--;
+  if (patchCount <= 0 && activePatch) {
+    activePatch.unpatch();
+    activePatch = null;
+    patchCount = 0;
+  }
+}
+
+function onceReleaser(): InterceptorCleanup {
+  let released = false;
+
+  return {
+    restore: () => {
+      if (released) return;
+      released = true;
+      releasePatch();
+    },
+  };
+}
+
 export function installXhrInterceptor(config: NetworkInterceptorConfig): InterceptorCleanup {
-  if (isPatched) {
+  if (activePatch) {
     patchCount++;
 
-    return {
-      restore: () => {
-        patchCount--;
-      },
-    };
+    return onceReleaser();
   }
 
-  originalOpen = XMLHttpRequest.prototype.open;
-  originalSend = XMLHttpRequest.prototype.send;
-  isPatched = true;
-  patchCount = 1;
+  // Closure-local, so code that still holds the patched methods after restore keeps working.
+  const originalOpen = XMLHttpRequest.prototype.open;
+  const originalSend = XMLHttpRequest.prototype.send;
+  let active = true;
 
-  XMLHttpRequest.prototype.open = function patchedOpen(
+  const patchedOpen = function patchedOpen(
+    this: XMLHttpRequest,
     method: string,
     url: string | URL,
     async?: boolean,
     username?: string | null,
     password?: string | null,
   ): void {
+    if (!active) {
+      return originalOpen.call(this, method, url, async ?? true, username, password);
+    }
+
     const urlString = typeof url === 'string' ? url : url.toString();
 
     xhrMetadataMap.set(this, {
@@ -57,17 +77,17 @@ export function installXhrInterceptor(config: NetworkInterceptorConfig): Interce
       return originalSetRequestHeader(name, value);
     };
 
-    return originalOpen!.call(this, method, url, async ?? true, username, password);
+    return originalOpen.call(this, method, url, async ?? true, username, password);
   };
 
-  XMLHttpRequest.prototype.send = function patchedSend(body?: Document | XMLHttpRequestBodyInit | null): void {
-    const metadata = xhrMetadataMap.get(this);
+  const patchedSend = function patchedSend(this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null): void {
+    const metadata = active ? xhrMetadataMap.get(this) : undefined;
 
     if (metadata) {
       metadata.startTime = performance.now();
 
       if (shouldIgnoreUrl(metadata.url, config.ignoreUrls)) {
-        return originalSend!.call(this, body);
+        return originalSend.call(this, body);
       }
 
       this.addEventListener('load', function () {
@@ -127,20 +147,24 @@ export function installXhrInterceptor(config: NetworkInterceptorConfig): Interce
       });
     }
 
-    return originalSend!.call(this, body);
+    return originalSend.call(this, body);
   };
 
-  return {
-    restore: () => {
-      patchCount--;
-      if (patchCount <= 0 && originalOpen && originalSend) {
+  XMLHttpRequest.prototype.open = patchedOpen;
+  XMLHttpRequest.prototype.send = patchedSend;
+  patchCount = 1;
+  activePatch = {
+    unpatch: () => {
+      active = false;
+      // Only put back methods nobody replaced after us; otherwise we would drop their wrapper.
+      if (XMLHttpRequest.prototype.open === patchedOpen) {
         XMLHttpRequest.prototype.open = originalOpen;
+      }
+      if (XMLHttpRequest.prototype.send === patchedSend) {
         XMLHttpRequest.prototype.send = originalSend;
-        originalOpen = null;
-        originalSend = null;
-        isPatched = false;
-        patchCount = 0;
       }
     },
   };
+
+  return onceReleaser();
 }

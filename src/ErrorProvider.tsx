@@ -1,5 +1,12 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { CapturedError, ErrorContextValue, ErrorProviderProps, NetworkErrorDetails, ViewMode } from './types';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type {
+  CapturedError,
+  ErrorContextValue,
+  ErrorProviderProps,
+  NetworkErrorDetails,
+  NetworkInterceptorConfig,
+  ViewMode,
+} from './types';
 import { createCapturedError, getInitialViewMode, getDefaultDismissible } from './utils/capturedError';
 import { installFetchInterceptor } from './interceptors/fetchInterceptor';
 import { installXhrInterceptor } from './interceptors/xhrInterceptor';
@@ -37,6 +44,10 @@ export function ErrorProvider({
   onErrorRef.current = onError;
   const maxLogSizeRef = useRef(maxLogSize);
   maxLogSizeRef.current = maxLogSize;
+  const ignoreStatusesRef = useRef(ignoreStatuses);
+  ignoreStatusesRef.current = ignoreStatuses;
+  const ignoreUrlsRef = useRef(ignoreUrls);
+  ignoreUrlsRef.current = ignoreUrls;
 
   const addErrorStable = useCallback((capturedError: CapturedError, showImmediately = true) => {
     setErrorLog((prev) => [capturedError, ...prev].slice(0, maxLogSizeRef.current));
@@ -83,6 +94,21 @@ export function ErrorProvider({
       }
     },
     [addErrorStable],
+  );
+
+  // Reads the latest ignore options at request time, so the interceptors are installed once
+  // instead of being re-patched whenever a new array is passed (the defaults are new every render).
+  const networkConfig = useMemo<NetworkInterceptorConfig>(
+    () => ({
+      get ignoreStatuses() {
+        return ignoreStatusesRef.current;
+      },
+      get ignoreUrls() {
+        return ignoreUrlsRef.current;
+      },
+      onError: handleNetworkErrorStable,
+    }),
+    [handleNetworkErrorStable],
   );
 
   const axiosCleanupRef = useRef<{ restore: () => void } | null>(null);
@@ -180,8 +206,8 @@ export function ErrorProvider({
 
     if (catchNetwork) {
       cleanupRef.current.push(
-        installFetchInterceptor({ ignoreStatuses, ignoreUrls, onError: handleNetworkErrorStable }),
-        installXhrInterceptor({ ignoreStatuses, ignoreUrls, onError: handleNetworkErrorStable }),
+        installFetchInterceptor(networkConfig),
+        installXhrInterceptor(networkConfig),
       );
     }
 
@@ -189,7 +215,7 @@ export function ErrorProvider({
       cleanupRef.current.forEach((c) => c.restore());
       cleanupRef.current = [];
     };
-  }, [catchNetwork, ignoreStatuses, ignoreUrls, handleNetworkErrorStable, handleUnhandledRejection, handleGlobalError]);
+  }, [catchNetwork, networkConfig, handleUnhandledRejection, handleGlobalError]);
 
   useEffect(() => {
     return () => {
