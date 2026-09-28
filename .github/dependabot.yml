@@ -4,6 +4,9 @@ updates:
   # and the React types for type checking); react is a peer dependency.
   # Updates don't change what the package ships, so they are chores and
   # don't cut a release. Minor and patch updates arrive as one pull request.
+  # React, react-dom and their types must move together (react-dom's peer
+  # range accepts only its own react major), so they get one group of their
+  # own for every update type; a dependency joins the first group it matches.
   - package-ecosystem: 'npm'
     directory: '/'
     schedule:
@@ -15,6 +18,8 @@ updates:
       prefix: 'chore'
       include: 'scope'
     groups:
+      react:
+        patterns: ['react', 'react-dom', '@types/react', '@types/react-dom']
       dev-dependencies:
         patterns: ['*']
         update-types: ['minor', 'patch']
