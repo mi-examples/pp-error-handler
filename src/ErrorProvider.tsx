@@ -1,6 +1,14 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { CapturedError, ErrorContextValue, ErrorProviderProps, NetworkErrorDetails, ViewMode } from './types';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type {
+  CapturedError,
+  ErrorContextValue,
+  ErrorProviderProps,
+  NetworkErrorDetails,
+  NetworkInterceptorConfig,
+  ViewMode,
+} from './types';
 import { createCapturedError, getInitialViewMode, getDefaultDismissible } from './utils/capturedError';
+import { classifyError } from './utils/errorClassifier';
 import { installFetchInterceptor } from './interceptors/fetchInterceptor';
 import { installXhrInterceptor } from './interceptors/xhrInterceptor';
 import { installAxiosInstanceInterceptors } from './interceptors/axiosInterceptor';
@@ -10,6 +18,40 @@ import { ErrorOverlay } from './ErrorOverlay';
 import { ErrorContext } from './ErrorContext';
 
 const NETWORK_CORRELATION_MS = 200;
+const NETWORK_DEDUPE_MS = 200;
+const RENDER_REPLAY_WINDOW_MS = 1000;
+
+interface PendingNetworkError {
+  captured: CapturedError;
+  timeoutId: ReturnType<typeof setTimeout>;
+}
+
+/** Method + URL (without query and hash) + status: the same failure seen by two interceptors. */
+function networkReportKey(details: NetworkErrorDetails): string {
+  let url = details.url;
+
+  try {
+    const parsed = new URL(details.url, window.location.href);
+    url = parsed.origin + parsed.pathname;
+  } catch {}
+
+  return `${details.method.toUpperCase()} ${url} ${details.status ?? 'no-response'}`;
+}
+
+// Layout effects run before the children's mount effects, so requests made there are intercepted.
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+/** Returns the previous array while the items are the same, so inline arrays don't re-run effects. */
+function useShallowStableArray<T>(items: T[]): T[] {
+  const ref = useRef(items);
+  const prev = ref.current;
+
+  if (prev !== items && (prev.length !== items.length || prev.some((item, i) => item !== items[i]))) {
+    ref.current = items;
+  }
+
+  return ref.current;
+}
 
 export function ErrorProvider({
   children,
@@ -37,27 +79,52 @@ export function ErrorProvider({
   onErrorRef.current = onError;
   const maxLogSizeRef = useRef(maxLogSize);
   maxLogSizeRef.current = maxLogSize;
+  const ignoreStatusesRef = useRef(ignoreStatuses);
+  ignoreStatusesRef.current = ignoreStatuses;
+  const ignoreUrlsRef = useRef(ignoreUrls);
+  ignoreUrlsRef.current = ignoreUrls;
 
   const addErrorStable = useCallback((capturedError: CapturedError, showImmediately = true) => {
-    if (isOverlayShowingRef.current) return;
-
     setErrorLog((prev) => [capturedError, ...prev].slice(0, maxLogSizeRef.current));
-    onErrorRef.current?.(capturedError);
 
-    if (showImmediately) {
+    // Keep the error that is already on screen; later errors only go to the log.
+    if (showImmediately && !isOverlayShowingRef.current) {
       isOverlayShowingRef.current = true;
       setCurrentError(capturedError);
       setShowOverlay(true);
     }
+
+    // Runs after the overlay state is set, so a failing callback can't hide the overlay.
+    try {
+      onErrorRef.current?.(capturedError);
+    } catch (callbackError) {
+      console.error('[pp-error-handler] onError callback threw:', callbackError);
+    }
   }, []);
 
-  const pendingNetworkErrorsRef = useRef<
-    Map<unknown, { captured: CapturedError; timeoutId: ReturnType<typeof setTimeout> }>
-  >(new Map());
+  const pendingNetworkErrorsRef = useRef<Map<unknown, PendingNetworkError>>(new Map());
+  const recentNetworkReportsRef = useRef<Array<{ key: string; at: number; entry: PendingNetworkError }>>([]);
 
   const handleNetworkErrorStable = useCallback(
     (networkDetails: NetworkErrorDetails, originalError?: Error) => {
-      if (isOverlayShowingRef.current) return;
+      // The browser axios adapter uses XHR, so one failed request reaches both the XHR and the
+      // axios interceptor. Keep the first report and drop the copy, but map the copy's error to
+      // the first report so its unhandled rejection still correlates with it.
+      const now = Date.now();
+      const key = networkReportKey(networkDetails);
+      const recent = recentNetworkReportsRef.current.filter((r) => now - r.at <= NETWORK_DEDUPE_MS);
+      recentNetworkReportsRef.current = recent;
+      const duplicate = recent.find((r) => r.key === key);
+
+      if (duplicate) {
+        const stillPending = [...pendingNetworkErrorsRef.current.values()].includes(duplicate.entry);
+
+        if (originalError && stillPending) {
+          pendingNetworkErrorsRef.current.set(originalError, duplicate.entry);
+        }
+
+        return;
+      }
 
       const error = originalError ?? new Error(`HTTP ${networkDetails.status}: ${networkDetails.url}`);
       const category = networkDetails.status ? ('API' as const) : ('NETWORK' as const);
@@ -70,7 +137,8 @@ export function ErrorProvider({
         addErrorStable(capturedError, false);
       }, NETWORK_CORRELATION_MS);
 
-      const entry = { captured: capturedError, timeoutId };
+      const entry: PendingNetworkError = { captured: capturedError, timeoutId };
+      recent.push({ key, at: now, entry });
 
       if (originalError) {
         pendingNetworkErrorsRef.current.set(originalError, entry);
@@ -82,22 +150,30 @@ export function ErrorProvider({
     [addErrorStable],
   );
 
-  const axiosCleanupRef = useRef<{ restore: () => void } | null>(null);
-  const axiosInstalledForRef = useRef<unknown[] | null>(null);
-
-  if (axiosInstances.length > 0 && axiosInstalledForRef.current !== axiosInstances) {
-    axiosCleanupRef.current?.restore();
-    axiosCleanupRef.current = installAxiosInstanceInterceptors(axiosInstances, {
-      ignoreStatuses,
-      ignoreUrls,
+  // Reads the latest ignore options at request time, so the interceptors are installed once
+  // instead of being re-patched whenever a new array is passed (the defaults are new every render).
+  const networkConfig = useMemo<NetworkInterceptorConfig>(
+    () => ({
+      get ignoreStatuses() {
+        return ignoreStatusesRef.current;
+      },
+      get ignoreUrls() {
+        return ignoreUrlsRef.current;
+      },
       onError: handleNetworkErrorStable,
-    });
-    axiosInstalledForRef.current = axiosInstances;
-  } else if (axiosInstances.length === 0 && axiosInstalledForRef.current !== null) {
-    axiosCleanupRef.current?.restore();
-    axiosCleanupRef.current = null;
-    axiosInstalledForRef.current = null;
-  }
+    }),
+    [handleNetworkErrorStable],
+  );
+
+  const stableAxiosInstances = useShallowStableArray(axiosInstances);
+
+  useIsomorphicLayoutEffect(() => {
+    if (stableAxiosInstances.length === 0) return;
+
+    const axiosCleanup = installAxiosInstanceInterceptors(stableAxiosInstances, networkConfig);
+
+    return () => axiosCleanup.restore();
+  }, [stableAxiosInstances, networkConfig]);
 
   const reportError = useCallback(
     (error: Error | string, metadata?: Record<string, unknown>) => {
@@ -107,10 +183,14 @@ export function ErrorProvider({
     [addErrorStable],
   );
 
+  // React development builds also raise a render error (and its replays) as global error
+  // events before the boundary catches it; those copies are dropped in handleGlobalError.
+  const boundaryErrorsRef = useRef<Array<{ name: string; message: string; at: number }>>([]);
+  const globalErrorTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
+
   const handleBoundaryError = useCallback(
     (error: Error, errorInfo: React.ErrorInfo) => {
-      if (isOverlayShowingRef.current) return;
-
+      boundaryErrorsRef.current.push({ name: error.name, message: error.message, at: Date.now() });
       addErrorStable(createCapturedError(error, { componentStack: errorInfo.componentStack || undefined }));
     },
     [addErrorStable],
@@ -125,8 +205,6 @@ export function ErrorProvider({
 
   const handleUnhandledRejection = useCallback(
     (error: Error, event: PromiseRejectionEvent) => {
-      if (isOverlayShowingRef.current) return;
-
       const pending = pendingNetworkErrorsRef.current.get(event.reason) ?? pendingNetworkErrorsRef.current.get(error);
 
       if (pending) {
@@ -136,25 +214,39 @@ export function ErrorProvider({
         return;
       }
 
-      addErrorStable(createCapturedError(error, { category: 'UNHANDLED_PROMISE' }));
+      // Keep a specific category (e.g. CHUNK for a failed dynamic import) when the classifier finds one.
+      const classified = classifyError(error);
+      addErrorStable(
+        createCapturedError(error, { category: classified === 'UNKNOWN' ? 'UNHANDLED_PROMISE' : classified }),
+      );
     },
     [addErrorStable, clearPendingEntry],
   );
 
   const handleGlobalError = useCallback(
     (error: Error, event: ErrorEvent) => {
-      if (isOverlayShowingRef.current) return;
+      // Deferred so a render error the boundary catches in the same task is reported once, by the boundary.
+      const timerId = setTimeout(() => {
+        globalErrorTimersRef.current.delete(timerId);
 
-      const pending = pendingNetworkErrorsRef.current.get(event.error) ?? pendingNetworkErrorsRef.current.get(error);
+        const now = Date.now();
+        boundaryErrorsRef.current = boundaryErrorsRef.current.filter((b) => now - b.at <= RENDER_REPLAY_WINDOW_MS);
+        if (boundaryErrorsRef.current.some((b) => b.name === error.name && b.message === error.message)) {
+          return;
+        }
 
-      if (pending) {
-        clearPendingEntry(pending);
-        addErrorStable(pending.captured, true);
+        const pending = pendingNetworkErrorsRef.current.get(event.error) ?? pendingNetworkErrorsRef.current.get(error);
 
-        return;
-      }
+        if (pending) {
+          clearPendingEntry(pending);
+          addErrorStable(pending.captured, true);
 
-      addErrorStable(createCapturedError(error));
+          return;
+        }
+
+        addErrorStable(createCapturedError(error));
+      }, 0);
+      globalErrorTimersRef.current.add(timerId);
     },
     [addErrorStable, clearPendingEntry],
   );
@@ -183,8 +275,8 @@ export function ErrorProvider({
 
     if (catchNetwork) {
       cleanupRef.current.push(
-        installFetchInterceptor({ ignoreStatuses, ignoreUrls, onError: handleNetworkErrorStable }),
-        installXhrInterceptor({ ignoreStatuses, ignoreUrls, onError: handleNetworkErrorStable }),
+        installFetchInterceptor(networkConfig),
+        installXhrInterceptor(networkConfig),
       );
     }
 
@@ -192,13 +284,12 @@ export function ErrorProvider({
       cleanupRef.current.forEach((c) => c.restore());
       cleanupRef.current = [];
     };
-  }, [catchNetwork, ignoreStatuses, ignoreUrls, handleNetworkErrorStable, handleUnhandledRejection, handleGlobalError]);
+  }, [catchNetwork, networkConfig, handleUnhandledRejection, handleGlobalError]);
 
   useEffect(() => {
     return () => {
-      axiosCleanupRef.current?.restore();
-      axiosCleanupRef.current = null;
-      axiosInstalledForRef.current = [];
+      globalErrorTimersRef.current.forEach((timerId) => clearTimeout(timerId));
+      globalErrorTimersRef.current.clear();
 
       for (const { timeoutId } of pendingNetworkErrorsRef.current.values()) {
         clearTimeout(timeoutId);
@@ -240,7 +331,7 @@ export function ErrorProvider({
 
   return (
     <ErrorContext.Provider value={contextValue}>
-      <ErrorBoundary ref={errorBoundaryRef} onError={handleBoundaryError} fallback={showOverlay ? null : children}>
+      <ErrorBoundary ref={errorBoundaryRef} onError={handleBoundaryError} fallback={null}>
         {children}
       </ErrorBoundary>
       {renderOverlay()}

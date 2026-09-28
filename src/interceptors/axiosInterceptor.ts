@@ -18,6 +18,12 @@ function isAxiosError(error: any): boolean {
   return error?.isAxiosError === true || error?.config !== undefined;
 }
 
+// A request cancelled with AbortController or a CancelToken; it isn't a failure.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function isAxiosCancel(error: any): boolean {
+  return error?.code === 'ERR_CANCELED' || error?.__CANCEL__ === true;
+}
+
 export function installAxiosInstanceInterceptors(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   instances: any[],
@@ -55,7 +61,7 @@ export function installAxiosInstanceInterceptors(
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (error: any) => {
-        if (isAxiosError(error)) {
+        if (isAxiosError(error) && !isAxiosCancel(error)) {
           const requestConfig = error.config;
           const response = error.response;
           const url = requestConfig?.url || 'unknown';
