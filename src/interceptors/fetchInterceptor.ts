@@ -55,6 +55,11 @@ export function installFetchInterceptor(config: NetworkInterceptorConfig): Inter
     try {
       response = await originalFetch.call(window, input, init);
     } catch (error) {
+      // An aborted request was cancelled on purpose (AbortController); it isn't a failure.
+      if ((error as { name?: unknown } | null)?.name === 'AbortError') {
+        throw error;
+      }
+
       const duration = performance.now() - startTime;
       const networkDetails: NetworkErrorDetails = {
         method: method.toUpperCase(),
