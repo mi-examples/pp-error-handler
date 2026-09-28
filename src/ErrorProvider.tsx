@@ -39,12 +39,11 @@ export function ErrorProvider({
   maxLogSizeRef.current = maxLogSize;
 
   const addErrorStable = useCallback((capturedError: CapturedError, showImmediately = true) => {
-    if (isOverlayShowingRef.current) return;
-
     setErrorLog((prev) => [capturedError, ...prev].slice(0, maxLogSizeRef.current));
     onErrorRef.current?.(capturedError);
 
-    if (showImmediately) {
+    // Keep the error that is already on screen; later errors only go to the log.
+    if (showImmediately && !isOverlayShowingRef.current) {
       isOverlayShowingRef.current = true;
       setCurrentError(capturedError);
       setShowOverlay(true);
@@ -57,8 +56,6 @@ export function ErrorProvider({
 
   const handleNetworkErrorStable = useCallback(
     (networkDetails: NetworkErrorDetails, originalError?: Error) => {
-      if (isOverlayShowingRef.current) return;
-
       const error = originalError ?? new Error(`HTTP ${networkDetails.status}: ${networkDetails.url}`);
       const category = networkDetails.status ? ('API' as const) : ('NETWORK' as const);
       const capturedError = createCapturedError(error, { networkDetails, category });
@@ -109,8 +106,6 @@ export function ErrorProvider({
 
   const handleBoundaryError = useCallback(
     (error: Error, errorInfo: React.ErrorInfo) => {
-      if (isOverlayShowingRef.current) return;
-
       addErrorStable(createCapturedError(error, { componentStack: errorInfo.componentStack || undefined }));
     },
     [addErrorStable],
@@ -125,8 +120,6 @@ export function ErrorProvider({
 
   const handleUnhandledRejection = useCallback(
     (error: Error, event: PromiseRejectionEvent) => {
-      if (isOverlayShowingRef.current) return;
-
       const pending = pendingNetworkErrorsRef.current.get(event.reason) ?? pendingNetworkErrorsRef.current.get(error);
 
       if (pending) {
@@ -143,8 +136,6 @@ export function ErrorProvider({
 
   const handleGlobalError = useCallback(
     (error: Error, event: ErrorEvent) => {
-      if (isOverlayShowingRef.current) return;
-
       const pending = pendingNetworkErrorsRef.current.get(event.error) ?? pendingNetworkErrorsRef.current.get(error);
 
       if (pending) {
