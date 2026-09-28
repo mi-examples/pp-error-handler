@@ -40,13 +40,19 @@ export function ErrorProvider({
 
   const addErrorStable = useCallback((capturedError: CapturedError, showImmediately = true) => {
     setErrorLog((prev) => [capturedError, ...prev].slice(0, maxLogSizeRef.current));
-    onErrorRef.current?.(capturedError);
 
     // Keep the error that is already on screen; later errors only go to the log.
     if (showImmediately && !isOverlayShowingRef.current) {
       isOverlayShowingRef.current = true;
       setCurrentError(capturedError);
       setShowOverlay(true);
+    }
+
+    // Runs after the overlay state is set, so a failing callback can't hide the overlay.
+    try {
+      onErrorRef.current?.(capturedError);
+    } catch (callbackError) {
+      console.error('[pp-error-handler] onError callback threw:', callbackError);
     }
   }, []);
 
